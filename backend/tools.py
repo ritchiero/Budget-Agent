@@ -1,415 +1,408 @@
 """
-OpenClaw Cost Auditor - Custom tools for Strands Agent
-Analyzes OpenClaw session data to find hidden costs and optimize spending.
+Budget Agent - Cost Analysis Tools (Real Clawdbot Format)
+Parses actual ~/.clawdbot/ session data to find hidden costs.
 """
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 from strands import tool
 
-# Pricing per million tokens (as of Feb 2026)
 PRICING = {
-    "claude-sonnet-4-5": {"input": 3.0, "output": 15.0, "cache_read": 0.30},
-    "claude-sonnet-4-20250514": {"input": 3.0, "output": 15.0, "cache_read": 0.30},
-    "claude-opus-4-5-20250414": {"input": 15.0, "output": 75.0, "cache_read": 1.50},
-    "claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.0, "cache_read": 0.08},
-    "gpt-5.2": {"input": 2.50, "output": 10.0, "cache_read": 0.0},
-    "gpt-5.3-codex-spark": {"input": 5.0, "output": 15.0, "cache_read": 0.0},
+    "claude-sonnet-4-5": {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
+    "claude-sonnet-4-20250514": {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
+    "claude-opus-4-5": {"input": 15.0, "output": 75.0, "cache_read": 1.50, "cache_write": 18.75},
+    "claude-haiku-4-5": {"input": 0.80, "output": 4.0, "cache_read": 0.08, "cache_write": 1.0},
 }
 
 def get_data_dir():
-    """Get the data directory path."""
     return os.environ.get("OPENCLAW_DATA_DIR", os.path.join(os.path.dirname(__file__), "..", "data"))
 
 def load_sessions():
-    """Load OpenClaw sessions.json data."""
     data_dir = get_data_dir()
-    sessions_path = os.path.join(data_dir, "sessions.json")
-    with open(sessions_path, "r") as f:
-        return json.load(f)
+    for fname in ["sessions_real.json", "sessions.json"]:
+        path = os.path.join(data_dir, fname)
+        if os.path.exists(path):
+            with open(path, "r") as f:
+                return json.load(f)
+    return {}
 
-def load_session_logs():
-    """Load all JSONL session log files."""
+def classify_message(entry):
+    """Classify a message by analyzing content for hidden cost patterns."""
+    msg = entry.get("message", {})
+    role = msg.get("role", "")
+    raw_content = msg.get("content", "")
+    content = ""
+    if isinstance(raw_content, str):
+        content = raw_content.lower()
+    elif isinstance(raw_content, list):
+        for block in raw_content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                content += block.get("text", "").lower() + " "
+            elif isinstance(block, dict) and block.get("type") == "thinking":
+                content += block.get("thinking", "").lower() + " "
+            elif isinstance(block, str):
+                content += block.lower() + " "
+    if any(kw in content for kw in ["heartbeat", "heartbeat_ok", "health check", "systems nominal",
+                                      "all systems", "routine check"]):
+        return "heartbeat"
+    if any(kw in content for kw in ["whatsapp", "gateway disconnect", "reconnect", "status 428",
+                                      "connection lost", "reconectando", "desconect"]):
+        return "whatsapp_reconnect"
+    if any(kw in content for kw in ["memory resync", "soul.md", "loading conversation",
+                                      "context reload", "compaction", "summarizing history"]):
+        return "memory_resync"
+    if any(kw in content for kw in ["himalaya", "inbox", "email scan", "checking email",
+                                      "new emails", "correo", "mail check"]):
+        return "email_check"
+    if any(kw in content for kw in ["cost report", "session cost", "daily usage", "token usage",
+                                      "spending report", "costo de sesion"]):
+        return "cost_report"
+    if any(kw in content for kw in ["cron", "scheduled", "automated task", "periodic"]):
+        return "cron_task"
+    if role == "user":
+        return "user_request"
+    elif role == "assistant":
+        return "response"
+    return "other"
+
+def extract_usage(entry):
+    """Extract usage data from real Clawdbot message format."""
+    msg = entry.get("message", {})
+    usage = msg.get("usage", {})
+    if not usage:
+        return None
+    cost_data = usage.get("cost", {})
+    return {
+        "input": usage.get("input", 0),
+        "output": usage.get("output", 0),
+        "cache_read": usage.get("cacheRead", 0),
+        "cache_write": usage.get("cacheWrite", 0),
+        "total_tokens": usage.get("totalTokens", 0) or (usage.get("input", 0) + usage.get("output", 0)),
+        "cost": {
+            "input": cost_data.get("input", 0),
+            "output": cost_data.get("output", 0),
+            "cache_read": cost_data.get("cacheRead", 0),
+            "cache_write": cost_data.get("cacheWrite", 0),
+            "total": cost_data.get("total", 0),
+        }
+    }
+
+def load_all_messages():
+    """Load all message entries from all .jsonl files."""
     data_dir = get_data_dir()
-    all_messages = []
-    for f in Path(data_dir).glob("*.jsonl"):
+    all_entries = []
+    for f in sorted(Path(data_dir).glob("*.jsonl")):
         with open(f, "r") as fh:
             for line in fh:
                 line = line.strip()
-                if line:
-                    try:
-                        all_messages.append(json.load(open("/dev/stdin") if False else None) if False else json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
-    return all_messages
-
-def calculate_cost(usage, model):
-    """Calculate cost for a single message."""
-    pricing = PRICING.get(model, PRICING["claude-sonnet-4-20250514"])
-    input_cost = (usage.get("input", 0) / 1_000_000) * pricing["input"]
-    output_cost = (usage.get("output", 0) / 1_000_000) * pricing["output"]
-    cache_cost = (usage.get("cacheRead", 0) / 1_000_000) * pricing["cache_read"]
-    return input_cost + output_cost + cache_cost
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    if entry.get("type") == "message":
+                        entry["_source_file"] = f.name
+                        all_entries.append(entry)
+                except json.JSONDecodeError:
+                    continue
+    return all_entries
 
 
 @tool
 def get_agent_overview() -> str:
-    """Get an overview of all OpenClaw agents with their token usage, costs, and activity.
-    Use this when the user asks about their agents, overall usage, or wants a summary.
-    
+    """Get overview of all Clawdbot sessions with token usage and costs.
+    Use when user asks about agents, overall usage, or wants a summary.
     Returns:
-        str: JSON formatted overview of all agents
+        str: JSON overview of all agents and sessions
     """
     sessions = load_sessions()
-    overview = []
+    messages = load_all_messages()
+    file_costs = {}
     total_cost = 0
-    
-    for agent_key, data in sessions.items():
-        agent_name = agent_key.split(":")[1] if ":" in agent_key else agent_key
-        model = data.get("model", "unknown")
-        pricing = PRICING.get(model, PRICING["claude-sonnet-4-20250514"])
-        
-        input_cost = (data.get("totalInputTokens", 0) / 1_000_000) * pricing["input"]
-        output_cost = (data.get("totalOutputTokens", 0) / 1_000_000) * pricing["output"]
-        cache_cost = (data.get("totalCacheRead", 0) / 1_000_000) * pricing["cache_read"]
-        agent_cost = input_cost + output_cost + cache_cost
-        total_cost += agent_cost
-        
-        overview.append({
+    total_tokens = 0
+    total_messages = 0
+    for entry in messages:
+        usage = extract_usage(entry)
+        if not usage:
+            continue
+        source = entry.get("_source_file", "unknown")
+        if source not in file_costs:
+            file_costs[source] = {"cost": 0, "tokens": 0, "messages": 0, "model": "unknown"}
+        file_costs[source]["cost"] += usage["cost"]["total"]
+        file_costs[source]["tokens"] += usage["total_tokens"]
+        file_costs[source]["messages"] += 1
+        file_costs[source]["model"] = entry.get("message", {}).get("model", file_costs[source]["model"])
+        total_cost += usage["cost"]["total"]
+        total_tokens += usage["total_tokens"]
+        total_messages += 1
+    session_overview = []
+    for key, data in sessions.items():
+        agent_name = key.split(":")[1] if ":" in key else key
+        session_type = "cron" if "cron" in key else "main"
+        delivery = data.get("deliveryContext", {})
+        session_overview.append({
+            "session_key": key,
             "agent": agent_name,
-            "model": model,
-            "total_tokens": data.get("totalTokens", 0),
-            "input_tokens": data.get("totalInputTokens", 0),
-            "output_tokens": data.get("totalOutputTokens", 0),
-            "cache_read_tokens": data.get("totalCacheRead", 0),
-            "sessions": data.get("sessionCount", 0),
-            "estimated_cost_usd": round(agent_cost, 4),
-            "last_active": data.get("lastActive", "unknown")
+            "type": session_type,
+            "channel": delivery.get("channel", "unknown"),
+            "compaction_count": data.get("compactionCount", 0),
         })
-    
+    top_sessions = sorted(file_costs.items(), key=lambda x: x[1]["cost"], reverse=True)[:10]
     return json.dumps({
-        "agents": overview,
-        "total_estimated_cost_usd": round(total_cost, 4),
-        "total_agents": len(overview)
+        "sessions": session_overview,
+        "total_sessions": len(sessions),
+        "total_cost_usd": round(total_cost, 4),
+        "total_tokens": total_tokens,
+        "total_messages": total_messages,
+        "total_jsonl_files": len(file_costs),
+        "top_spending_sessions": [
+            {"file": k, "cost_usd": round(v["cost"], 4), "tokens": v["tokens"],
+             "messages": v["messages"], "model": v["model"]}
+            for k, v in top_sessions
+        ],
     }, indent=2)
 
 
 @tool
 def find_hidden_costs() -> str:
-    """Analyze OpenClaw session logs to find hidden/wasteful token consumption.
-    Identifies: heartbeats, memory resyncs, tool retries, context compactions, 
-    system prompt reloads, and other non-user-initiated token usage.
-    
+    """Analyze all Clawdbot session logs to find hidden/wasteful token consumption.
+    Classifies every message by content to detect: heartbeats, memory resyncs,
+    WhatsApp reconnects, email scans, cost reports, cron tasks vs actual user requests.
     Returns:
-        str: JSON analysis of hidden costs with categories and recommendations
+        str: JSON analysis with categories, totals, and actionable recommendations
     """
-    data_dir = get_data_dir()
-    
+    messages = load_all_messages()
     categories = {
-        "heartbeats": {"count": 0, "tokens": 0, "cost": 0, "description": "Health check pings (WhatsApp status, himalaya inbox, cron jobs) every 60s"},
-        "memory_resyncs": {"count": 0, "tokens": 0, "cost": 0, "description": "SOUL.md + conversation history reloads"},
-        "whatsapp_reconnects": {"count": 0, "tokens": 0, "cost": 0, "description": "WhatsApp gateway disconnect/reconnect cycles (status 428)"},
-        "email_checks": {"count": 0, "tokens": 0, "cost": 0, "description": "Himalaya IMAP inbox scans for new emails"},
-        "compactions": {"count": 0, "tokens": 0, "cost": 0, "description": "Context window compaction/summarization"},
-        "cost_reports": {"count": 0, "tokens": 0, "cost": 0, "description": "Auto-generated cost report calculations"},
-        "tool_retries": {"count": 0, "tokens": 0, "cost": 0, "description": "Failed tool calls that retry and waste tokens"},
-        "system_prompts": {"count": 0, "tokens": 0, "cost": 0, "description": "System prompt reloads"},
-        "user_requests": {"count": 0, "tokens": 0, "cost": 0, "description": "Actual user-initiated requests"},
-        "responses": {"count": 0, "tokens": 0, "cost": 0, "description": "Agent responses to user requests"}
+        "heartbeat": {"count": 0, "tokens": 0, "cost": 0, "cache_read": 0,
+                      "description": "Health check pings (WhatsApp, himalaya, cron)"},
+        "memory_resync": {"count": 0, "tokens": 0, "cost": 0, "cache_read": 0,
+                          "description": "SOUL.md + conversation history reloads"},
+        "whatsapp_reconnect": {"count": 0, "tokens": 0, "cost": 0, "cache_read": 0,
+                               "description": "WhatsApp gateway disconnect/reconnect"},
+        "email_check": {"count": 0, "tokens": 0, "cost": 0, "cache_read": 0,
+                        "description": "Himalaya IMAP inbox scans"},
+        "cost_report": {"count": 0, "tokens": 0, "cost": 0, "cache_read": 0,
+                        "description": "Auto cost report generation"},
+        "cron_task": {"count": 0, "tokens": 0, "cost": 0, "cache_read": 0,
+                      "description": "Scheduled/cron tasks"},
+        "user_request": {"count": 0, "tokens": 0, "cost": 0, "cache_read": 0,
+                         "description": "Your actual requests"},
+        "response": {"count": 0, "tokens": 0, "cost": 0, "cache_read": 0,
+                     "description": "Agent responses to you"},
+        "other": {"count": 0, "tokens": 0, "cost": 0, "cache_read": 0,
+                  "description": "Unclassified"},
     }
-    
-    for f in Path(data_dir).glob("*.jsonl"):
-        with open(f, "r") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                
-                if entry.get("type") != "message":
-                    continue
-                
-                msg = entry.get("message", {})
-                usage = msg.get("usage", {})
-                tags = entry.get("tags", [])
-                cost = usage.get("cost", {}).get("total", 0)
-                tokens = usage.get("input", 0) + usage.get("output", 0)
-                
-                if "heartbeat" in tags:
-                    cat = "heartbeats"
-                elif "memory_resync" in tags:
-                    cat = "memory_resyncs"
-                elif "whatsapp_reconnect" in tags:
-                    cat = "whatsapp_reconnects"
-                elif "email_check" in tags:
-                    cat = "email_checks"
-                elif "tool_retry" in tags:
-                    cat = "tool_retries"
-                elif "compaction" in tags:
-                    cat = "compactions"
-                elif "cost_report" in tags:
-                    cat = "cost_reports"
-                elif "system_prompt" in tags:
-                    cat = "system_prompts"
-                elif "user_request" in tags:
-                    cat = "user_requests"
-                elif "response" in tags:
-                    cat = "responses"
-                else:
-                    continue
-                
-                categories[cat]["count"] += 1
-                categories[cat]["tokens"] += tokens
-                categories[cat]["cost"] += cost
-    
-    # Calculate waste
-    user_cost = categories["user_requests"]["cost"] + categories["responses"]["cost"]
-    hidden_cost = sum(c["cost"] for k, c in categories.items() if k not in ["user_requests", "responses"])
+    total_cache_read_cost = 0
+    total_cache_write_cost = 0
+    timestamps = []
+    for entry in messages:
+        usage = extract_usage(entry)
+        if not usage:
+            continue
+        cat = classify_message(entry)
+        if cat not in categories:
+            cat = "other"
+        categories[cat]["count"] += 1
+        categories[cat]["tokens"] += usage["total_tokens"]
+        categories[cat]["cost"] += usage["cost"]["total"]
+        categories[cat]["cache_read"] += usage["cache_read"]
+        total_cache_read_cost += usage["cost"]["cache_read"]
+        total_cache_write_cost += usage["cost"]["cache_write"]
+        ts = entry.get("timestamp")
+        if ts:
+            timestamps.append(ts)
+    user_cost = sum(categories[c]["cost"] for c in ["user_request", "response"])
+    hidden_cost = sum(categories[c]["cost"] for c in categories if c not in ["user_request", "response"])
     total_cost = user_cost + hidden_cost
-    waste_percentage = (hidden_cost / total_cost * 100) if total_cost > 0 else 0
-    
-    # Monthly projections (assume this data is from ~1 day)
-    monthly_hidden = hidden_cost * 30
-    monthly_total = total_cost * 30
-    
+    waste_pct = (hidden_cost / total_cost * 100) if total_cost > 0 else 0
+    if timestamps:
+        timestamps_s = []
+        for t in timestamps:
+            if isinstance(t, str):
+                try:
+                    from datetime import datetime as dt
+                    timestamps_s.append(dt.fromisoformat(t.replace("Z", "+00:00")).timestamp())
+                except Exception:
+                    pass
+            elif isinstance(t, (int, float)):
+                timestamps_s.append(t / 1000 if t > 1e12 else t)
+        if timestamps_s:
+            active_days = max((max(timestamps_s) - min(timestamps_s)) / 86400, 1)
+        else:
+            active_days = 14
+    else:
+        active_days = 14
+    daily_cost = total_cost / active_days
+    monthly_total = daily_cost * 30
+    monthly_hidden = (hidden_cost / active_days) * 30
     recommendations = []
-    if categories["heartbeats"]["cost"] > 0:
-        hb_monthly = categories["heartbeats"]["cost"] * 30
-        recommendations.append({
-            "issue": "Heartbeat overhead — 60s interval burning tokens 24/7",
-            "monthly_waste": round(hb_monthly, 2),
-            "fix": "Increase heartbeat interval from 60s to 300s during idle periods. Use lightweight HTTP ping instead of LLM-powered health checks. Saves ~80% of heartbeat costs.",
-            "savings_pct": 80
-        })
-    if categories["memory_resyncs"]["cost"] > 0:
-        mr_monthly = categories["memory_resyncs"]["cost"] * 30
-        recommendations.append({
-            "issue": "Full memory resyncs loading entire SOUL.md + history",
-            "monthly_waste": round(mr_monthly, 2),
-            "fix": "Cache SOUL.md locally and only resync on config change. Use incremental history loading instead of full reload. Resync only after WhatsApp reconnects, not on schedule.",
-            "savings_pct": 60
-        })
-    if categories["whatsapp_reconnects"]["cost"] > 0:
-        wr_monthly = categories["whatsapp_reconnects"]["cost"] * 30
-        recommendations.append({
-            "issue": "WhatsApp gateway reconnect cycles (status 428)",
-            "monthly_waste": round(wr_monthly, 2),
-            "fix": "Handle reconnects at transport layer without invoking the LLM. Use simple connection state machine instead of asking the model to process disconnects.",
-            "savings_pct": 95
-        })
-    if categories["email_checks"]["cost"] > 0:
-        ec_monthly = categories["email_checks"]["cost"] * 30
-        recommendations.append({
-            "issue": "Himalaya email scans using LLM to check inbox",
-            "monthly_waste": round(ec_monthly, 2),
-            "fix": "Use himalaya CLI directly to count new emails. Only invoke LLM when there ARE emails to process. Skip newsletters/promotional with server-side filter rules.",
-            "savings_pct": 75
-        })
-    if categories["compactions"]["cost"] > 0:
-        cp_monthly = categories["compactions"]["cost"] * 30
-        recommendations.append({
-            "issue": "Context compaction using expensive model",
-            "monthly_waste": round(cp_monthly, 2),
-            "fix": "Use Haiku ($0.80/M input) instead of Sonnet ($3/M input) for compaction. Switch to sliding window instead of full re-summarization.",
-            "savings_pct": 70
-        })
-    if categories["cost_reports"]["cost"] > 0:
-        cr_monthly = categories["cost_reports"]["cost"] * 30
-        recommendations.append({
-            "issue": "Auto cost reports using LLM to compute arithmetic",
-            "monthly_waste": round(cr_monthly, 2),
-            "fix": "Generate cost reports with a bash script (like openclaw-token-tracker). Zero token cost for pure arithmetic.",
-            "savings_pct": 100
-        })
-    if categories["tool_retries"]["cost"] > 0:
-        tr_monthly = categories["tool_retries"]["cost"] * 30
-        recommendations.append({
-            "issue": "Tool call retries",
-            "monthly_waste": round(tr_monthly, 2),
-            "fix": "Add connection pooling and timeout handling. Implement circuit breaker pattern for flaky tools.",
-            "savings_pct": 90
-        })
-    if categories["system_prompts"]["cost"] > 0:
-        sp_monthly = categories["system_prompts"]["cost"] * 30
-        recommendations.append({
-            "issue": "System prompt reloads",
-            "monthly_waste": round(sp_monthly, 2),
-            "fix": "Cache system prompt in session. Only reload on config change.",
-            "savings_pct": 95
-        })
-    
+    def rec(cat_key, issue, fix, savings_pct):
+        if categories[cat_key]["cost"] > 0:
+            monthly = (categories[cat_key]["cost"] / active_days) * 30
+            recommendations.append({"issue": issue, "monthly_waste": round(monthly, 2),
+                                    "fix": fix, "savings_pct": savings_pct})
+    rec("heartbeat", "Heartbeat overhead - LLM health checks burning tokens 24/7",
+        "Replace LLM heartbeats with HTTP pings. Only invoke model when action needed.", 80)
+    rec("memory_resync", "Full memory resyncs reloading SOUL.md + history",
+        "Cache SOUL.md locally. Incremental history loading. Only full resync after reconnects.", 60)
+    rec("whatsapp_reconnect", "WhatsApp reconnects invoking the LLM",
+        "Handle reconnects at transport layer. Simple state machine, no LLM needed.", 95)
+    rec("email_check", "Himalaya email scans using LLM to check inbox",
+        "Use himalaya CLI directly. Only invoke LLM when emails need processing/response.", 75)
+    rec("cost_report", "Auto cost reports using LLM for arithmetic",
+        "Generate cost reports with bash script. Zero token cost for math.", 100)
+    rec("cron_task", "Cron tasks consuming tokens on schedule",
+        "Gate cron tasks behind lightweight checks. Only invoke LLM when action is needed.", 50)
+    if total_cache_read_cost > 0:
+        cache_monthly = (total_cache_read_cost / active_days) * 30
+        if cache_monthly > 0.01:
+            recommendations.append({
+                "issue": "Cache read overhead: ${:.2f}/mo".format(cache_monthly),
+                "monthly_waste": round(cache_monthly, 2),
+                "fix": "Oversized system prompts or history re-sent each turn. Trim prompt, use sliding window.",
+                "savings_pct": 40
+            })
+    potential_savings = sum(r["monthly_waste"] * r["savings_pct"] / 100 for r in recommendations)
     return json.dumps({
-        "cost_breakdown": {k: {"count": v["count"], "tokens": v["tokens"], "cost_usd": round(v["cost"], 4), "description": v["description"]} for k, v in categories.items()},
+        "cost_breakdown": {
+            k: {"count": v["count"], "tokens": v["tokens"], "cache_read": v["cache_read"],
+                "cost_usd": round(v["cost"], 4), "description": v["description"]}
+            for k, v in categories.items() if v["count"] > 0
+        },
         "summary": {
-            "total_cost_today": round(total_cost, 4),
+            "total_cost": round(total_cost, 4),
             "user_initiated_cost": round(user_cost, 4),
             "hidden_cost": round(hidden_cost, 4),
-            "waste_percentage": round(waste_percentage, 1),
+            "waste_percentage": round(waste_pct, 1),
+            "active_days_analyzed": round(active_days, 1),
+            "daily_avg_cost": round(daily_cost, 4),
             "projected_monthly_total": round(monthly_total, 2),
-            "projected_monthly_hidden": round(monthly_hidden, 2)
+            "projected_monthly_hidden": round(monthly_hidden, 2),
+            "cache_read_cost": round(total_cache_read_cost, 4),
+            "cache_write_cost": round(total_cache_write_cost, 4),
         },
         "recommendations": recommendations,
-        "total_potential_monthly_savings": round(sum(r["monthly_waste"] * r["savings_pct"] / 100 for r in recommendations), 2)
+        "total_potential_monthly_savings": round(potential_savings, 2)
     }, indent=2)
 
 
 @tool
-def estimate_task_cost(task_description: str, model: str = "claude-sonnet-4-20250514") -> str:
-    """Pre-estimate the cost of running a task before executing it.
-    Based on historical patterns from OpenClaw session data.
-    
+def estimate_task_cost(task_description: str, model: str = "claude-sonnet-4-5") -> str:
+    """Pre-estimate the cost of a task before executing it, based on historical Clawdbot data.
     Args:
-        task_description: Description of the task to estimate (e.g., "research competitors", "draft email", "summarize document")
-        model: The model to use for estimation (default: claude-sonnet-4-20250514)
-    
+        task_description: What the task is (e.g., "research competitors", "draft email")
+        model: Model to estimate for (default: claude-sonnet-4-5)
     Returns:
-        str: JSON with estimated tokens, cost, and time
+        str: JSON with estimated tokens, cost, time, and cheaper alternatives
     """
-    # Task complexity heuristics based on common OpenClaw patterns
-    task_lower = task_description.lower()
-    
-    if any(w in task_lower for w in ["research", "investigate", "analyze", "deep dive", "compare"]):
-        est_input = 50000
-        est_output = 12000
-        est_tools = 8
-        est_time = "3-8 minutes"
-        complexity = "high"
-    elif any(w in task_lower for w in ["email", "draft", "write", "reply", "message"]):
-        est_input = 15000
-        est_output = 3000
-        est_tools = 2
-        est_time = "30-90 seconds"
-        complexity = "medium"
-    elif any(w in task_lower for w in ["check", "status", "list", "show", "what"]):
-        est_input = 5000
-        est_output = 800
-        est_tools = 1
-        est_time = "10-30 seconds"
-        complexity = "low"
-    elif any(w in task_lower for w in ["summarize", "recap", "brief"]):
-        est_input = 35000
-        est_output = 5000
-        est_tools = 3
-        est_time = "1-3 minutes"
-        complexity = "medium-high"
-    elif any(w in task_lower for w in ["browse", "search", "find", "look up"]):
-        est_input = 25000
-        est_output = 4000
-        est_tools = 5
-        est_time = "2-5 minutes"
-        complexity = "medium"
+    messages = load_all_messages()
+    assistant_costs = []
+    for entry in messages:
+        usage = extract_usage(entry)
+        if not usage or entry.get("message", {}).get("role") != "assistant":
+            continue
+        assistant_costs.append(usage)
+    if assistant_costs:
+        avg_input = sum(u["input"] for u in assistant_costs) / len(assistant_costs)
+        avg_output = sum(u["output"] for u in assistant_costs) / len(assistant_costs)
+        avg_cache = sum(u["cache_read"] for u in assistant_costs) / len(assistant_costs)
+        avg_cost = sum(u["cost"]["total"] for u in assistant_costs) / len(assistant_costs)
     else:
-        est_input = 20000
-        est_output = 4000
-        est_tools = 3
-        est_time = "1-3 minutes"
-        complexity = "medium"
-    
-    # Add overhead costs
-    overhead_heartbeats = 2450 * 2  # ~2 heartbeats during task
-    overhead_memory = 18500  # one memory resync
-    overhead_system = 8900  # system prompt
-    
-    total_input = est_input + overhead_heartbeats + overhead_memory + overhead_system
-    total_output = est_output + 12 * 2 + 2200  # heartbeat + memory outputs
-    
-    pricing = PRICING.get(model, PRICING["claude-sonnet-4-20250514"])
-    task_cost = (est_input / 1_000_000) * pricing["input"] + (est_output / 1_000_000) * pricing["output"]
-    overhead_cost = ((total_input - est_input) / 1_000_000) * pricing["input"] + ((total_output - est_output) / 1_000_000) * pricing["output"]
-    total_cost = task_cost + overhead_cost
-    
-    # Alternative model comparison
+        avg_input, avg_output, avg_cache, avg_cost = 8000, 1500, 50000, 0.03
+    task_lower = task_description.lower()
+    if any(w in task_lower for w in ["research", "investigate", "analyze", "deep dive", "compare"]):
+        mult, complexity, est_time, est_tools = 4.0, "high", "3-8 min", 8
+    elif any(w in task_lower for w in ["email", "draft", "write", "reply", "correo"]):
+        mult, complexity, est_time, est_tools = 1.5, "medium", "30-90s", 2
+    elif any(w in task_lower for w in ["check", "status", "list", "show", "revisar"]):
+        mult, complexity, est_time, est_tools = 0.8, "low", "10-30s", 1
+    elif any(w in task_lower for w in ["summarize", "recap", "resumen"]):
+        mult, complexity, est_time, est_tools = 2.5, "medium-high", "1-3 min", 3
+    elif any(w in task_lower for w in ["browse", "search", "find", "buscar"]):
+        mult, complexity, est_time, est_tools = 3.0, "medium", "2-5 min", 5
+    else:
+        mult, complexity, est_time, est_tools = 1.5, "medium", "1-3 min", 3
+    est_cost = avg_cost * mult
+    overhead_cost = 0.014 * (mult * 2)
+    total = est_cost + overhead_cost
     alternatives = {}
-    for alt_model, alt_pricing in PRICING.items():
-        if alt_model != model:
-            alt_cost = (total_input / 1_000_000) * alt_pricing["input"] + (total_output / 1_000_000) * alt_pricing["output"]
+    for alt_model, alt_p in PRICING.items():
+        if alt_model != model and alt_model != "claude-sonnet-4-20250514":
+            alt_cost = ((avg_input * mult / 1e6) * alt_p["input"] +
+                        (avg_output * mult / 1e6) * alt_p["output"] +
+                        (avg_cache / 1e6) * alt_p["cache_read"])
             alternatives[alt_model] = round(alt_cost, 4)
-    
     return json.dumps({
         "task": task_description,
         "complexity": complexity,
         "model": model,
         "estimate": {
-            "task_tokens": {"input": est_input, "output": est_output},
-            "overhead_tokens": {"input": total_input - est_input, "output": total_output - est_output},
-            "total_tokens": total_input + total_output,
-            "task_cost_usd": round(task_cost, 4),
+            "input_tokens": int(avg_input * mult),
+            "output_tokens": int(avg_output * mult),
+            "task_cost_usd": round(est_cost, 4),
             "overhead_cost_usd": round(overhead_cost, 4),
-            "total_cost_usd": round(total_cost, 4),
-            "overhead_percentage": round(overhead_cost / total_cost * 100, 1) if total_cost > 0 else 0,
+            "total_cost_usd": round(total, 4),
             "estimated_tool_calls": est_tools,
-            "estimated_time": est_time
+            "estimated_time": est_time,
         },
+        "based_on": {"avg_response_cost": round(avg_cost, 4), "sample_size": len(assistant_costs)},
         "alternative_models": alternatives,
-        "cheapest_option": min(alternatives.items(), key=lambda x: x[1]) if alternatives else None
+        "cheapest_option": min(alternatives.items(), key=lambda x: x[1]) if alternatives else None,
     }, indent=2)
 
 
-@tool  
+@tool
 def get_cost_timeline() -> str:
-    """Get a timeline of costs over the session, showing when money was spent and on what.
-    Useful for identifying cost spikes and patterns.
-    
+    """Get timeline of costs across all sessions. Shows cumulative spending and cost spikes.
     Returns:
-        str: JSON timeline of costs with timestamps
+        str: JSON timeline with timestamps, categories, and daily totals
     """
-    data_dir = get_data_dir()
+    messages = load_all_messages()
     timeline = []
-    
-    for f in Path(data_dir).glob("*.jsonl"):
-        with open(f, "r") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                
-                if entry.get("type") != "message":
-                    continue
-                
-                msg = entry.get("message", {})
-                usage = msg.get("usage", {})
-                tags = entry.get("tags", [])
-                
-                if not usage:
-                    continue
-                
-                cost = usage.get("cost", {}).get("total", 0)
-                timestamp = msg.get("timestamp", 0)
-                
-                category = "other"
-                if "heartbeat" in tags: category = "heartbeat"
-                elif "memory_resync" in tags: category = "memory_resync"
-                elif "tool_retry" in tags: category = "tool_retry"
-                elif "compaction" in tags: category = "compaction"
-                elif "system_prompt" in tags: category = "system_prompt"
-                elif "user_request" in tags: category = "user_request"
-                elif "response" in tags: category = "response"
-                
-                timeline.append({
-                    "timestamp": timestamp,
-                    "category": category,
-                    "cost_usd": cost,
-                    "tokens": usage.get("input", 0) + usage.get("output", 0),
-                    "input_tokens": usage.get("input", 0),
-                    "output_tokens": usage.get("output", 0)
-                })
-    
+    for entry in messages:
+        usage = extract_usage(entry)
+        if not usage:
+            continue
+        ts_raw = entry.get("timestamp", "")
+        if isinstance(ts_raw, str) and ts_raw:
+            try:
+                from datetime import datetime as dt
+                ts = dt.fromisoformat(ts_raw.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                ts = 0
+        elif isinstance(ts_raw, (int, float)):
+            ts = ts_raw / 1000 if ts_raw > 1e12 else ts_raw
+        else:
+            ts = 0
+        timeline.append({
+            "timestamp": ts,
+            "category": classify_message(entry),
+            "cost_usd": usage["cost"]["total"],
+            "tokens": usage["total_tokens"],
+            "input_tokens": usage["input"],
+            "output_tokens": usage["output"],
+            "cache_read_tokens": usage["cache_read"],
+            "model": entry.get("message", {}).get("model", "unknown"),
+            "source_file": entry.get("_source_file", "unknown"),
+        })
     timeline.sort(key=lambda x: x["timestamp"])
-    
     cumulative = 0
-    for entry in timeline:
-        cumulative += entry["cost_usd"]
-        entry["cumulative_cost_usd"] = round(cumulative, 4)
-    
+    daily_costs = {}
+    for e in timeline:
+        cumulative += e["cost_usd"]
+        e["cumulative_cost_usd"] = round(cumulative, 4)
+        if e["timestamp"]:
+            try:
+                day = datetime.fromtimestamp(e["timestamp"]).strftime("%Y-%m-%d")
+                daily_costs[day] = daily_costs.get(day, 0) + e["cost_usd"]
+            except (ValueError, OSError):
+                pass
+    most_expensive = max(daily_costs.items(), key=lambda x: x[1]) if daily_costs else ("unknown", 0)
     return json.dumps({
-        "timeline": timeline,
+        "timeline": timeline[-50:],
         "total_entries": len(timeline),
-        "total_cost": round(cumulative, 4)
+        "total_cost": round(cumulative, 4),
+        "daily_costs": {k: round(v, 4) for k, v in sorted(daily_costs.items())},
+        "most_expensive_day": {"date": most_expensive[0], "cost_usd": round(most_expensive[1], 4)},
+        "total_days": len(daily_costs),
     }, indent=2)

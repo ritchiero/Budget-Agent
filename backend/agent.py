@@ -59,7 +59,7 @@ def create_agent():
     setup_datadog_telemetry()
     
     model = BedrockModel(
-        model_id=os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0"),
+        model_id=os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-3-5-haiku-20241022-v1:0"),
         region_name=os.environ.get("AWS_DEFAULT_REGION", "us-west-2"),
     )
     
