@@ -1,0 +1,848 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Cost Auditor — OpenClaw Token Intelligence</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0a0a0f;
+  --surface: #12121a;
+  --surface-2: #1a1a26;
+  --border: #2a2a3a;
+  --text: #e4e4ef;
+  --text-dim: #8888a0;
+  --accent: #00ff88;
+  --accent-dim: #00cc6a;
+  --danger: #ff4466;
+  --danger-dim: #cc3355;
+  --warning: #ffaa22;
+  --info: #44aaff;
+  --purple: #aa66ff;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: 'Inter', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* --- Header --- */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 32px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.header h1 {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: -0.5px;
+}
+
+.header h1 span { color: var(--text-dim); font-weight: 400; }
+
+.header-badge {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 4px 12px;
+  border-radius: 20px;
+  background: rgba(0, 255, 136, 0.1);
+  color: var(--accent);
+  border: 1px solid rgba(0, 255, 136, 0.2);
+}
+
+/* --- Layout --- */
+.main {
+  display: grid;
+  grid-template-columns: 1fr 400px;
+  grid-template-rows: auto auto 1fr;
+  gap: 0;
+  height: calc(100vh - 65px);
+}
+
+/* --- Stats Row --- */
+.stats-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.stat-card {
+  background: var(--surface);
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stat-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--text-dim);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.stat-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.stat-value.danger { color: var(--danger); }
+.stat-value.accent { color: var(--accent); }
+.stat-value.warning { color: var(--warning); }
+
+.stat-sub {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* --- Dashboard Panels --- */
+.dashboard {
+  grid-column: 1;
+  overflow-y: auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text);
+}
+
+.panel-body { padding: 20px; }
+
+/* --- Hidden Costs Bars --- */
+.cost-bar-group { display: flex; flex-direction: column; gap: 14px; }
+
+.cost-bar-item {
+  display: grid;
+  grid-template-columns: 160px 1fr 80px;
+  align-items: center;
+  gap: 12px;
+}
+
+.cost-bar-label {
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 500;
+}
+
+.cost-bar-track {
+  height: 24px;
+  background: var(--surface-2);
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
+}
+
+.cost-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 1s ease;
+  position: relative;
+}
+
+.cost-bar-fill.waste { background: linear-gradient(90deg, var(--danger), var(--danger-dim)); }
+.cost-bar-fill.useful { background: linear-gradient(90deg, var(--accent), var(--accent-dim)); }
+.cost-bar-fill.warning { background: linear-gradient(90deg, var(--warning), #cc8800); }
+
+.cost-bar-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: right;
+}
+
+/* --- Agent Table --- */
+.agent-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.agent-table th {
+  text-align: left;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.agent-table td {
+  padding: 12px;
+  font-size: 13px;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+
+.agent-table td.mono {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 500;
+}
+
+.model-badge {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--purple);
+  border: 1px solid rgba(170, 102, 255, 0.2);
+}
+
+/* --- Recommendations --- */
+.rec-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px;
+  margin-bottom: 12px;
+  border-left: 3px solid var(--danger);
+}
+
+.rec-card:last-child { margin-bottom: 0; }
+
+.rec-issue {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 6px;
+  color: var(--danger);
+}
+
+.rec-fix {
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  margin-bottom: 8px;
+}
+
+.rec-savings {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* --- Chat Panel --- */
+.chat-panel {
+  grid-column: 2;
+  grid-row: 2 / -1;
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+}
+
+.chat-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-header .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.msg {
+  max-width: 95%;
+  padding: 12px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.msg.assistant {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  align-self: flex-start;
+}
+
+.msg.user {
+  background: rgba(0, 255, 136, 0.1);
+  border: 1px solid rgba(0, 255, 136, 0.2);
+  align-self: flex-end;
+  color: var(--accent);
+}
+
+.msg.system {
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  text-align: center;
+  align-self: center;
+  font-style: italic;
+}
+
+.msg pre {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  background: var(--bg);
+  padding: 10px;
+  border-radius: 4px;
+  margin-top: 8px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+.chat-input-area {
+  padding: 16px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 8px;
+}
+
+.chat-input {
+  flex: 1;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 14px;
+  color: var(--text);
+  font-family: 'Inter', sans-serif;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.chat-input:focus { border-color: var(--accent); }
+
+.chat-input::placeholder { color: var(--text-dim); }
+
+.chat-send {
+  background: var(--accent);
+  border: none;
+  border-radius: 6px;
+  padding: 10px 16px;
+  color: var(--bg);
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.chat-send:hover { background: var(--accent-dim); }
+.chat-send:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* --- Quick Actions --- */
+.quick-actions {
+  padding: 12px 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.quick-btn {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  padding: 5px 10px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.quick-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* --- Timeline --- */
+.timeline-row {
+  display: grid;
+  grid-template-columns: 80px 1fr 60px;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.02);
+  font-size: 12px;
+}
+
+.timeline-time {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.timeline-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 6px;
+}
+
+.timeline-dot.heartbeat { background: var(--danger); }
+.timeline-dot.memory_resync { background: var(--warning); }
+.timeline-dot.user_request { background: var(--accent); }
+.timeline-dot.response { background: var(--info); }
+.timeline-dot.compaction { background: var(--purple); }
+.timeline-dot.tool_retry { background: var(--danger); }
+.timeline-dot.system_prompt { background: var(--text-dim); }
+
+.timeline-cost {
+  font-family: 'JetBrains Mono', monospace;
+  text-align: right;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* --- Loading --- */
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-right: 10px;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* --- Scrollbar --- */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+
+/* --- Responsive --- */
+@media (max-width: 900px) {
+  .main { grid-template-columns: 1fr; }
+  .chat-panel { grid-column: 1; grid-row: auto; height: 400px; }
+  .stats-row { grid-template-columns: repeat(2, 1fr); }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🔍 agent-cost-auditor <span>/ openclaw</span></h1>
+  <div class="header-badge">⚡ Strands + Bedrock + Datadog</div>
+</div>
+
+<div class="main">
+  <!-- Stats Row -->
+  <div class="stats-row">
+    <div class="stat-card">
+      <div class="stat-label">Total Spent</div>
+      <div class="stat-value" id="total-cost">—</div>
+      <div class="stat-sub">across all agents</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Hidden Costs</div>
+      <div class="stat-value danger" id="hidden-cost">—</div>
+      <div class="stat-sub" id="waste-pct">— of total</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Monthly Projection</div>
+      <div class="stat-value warning" id="monthly-cost">—</div>
+      <div class="stat-sub">at current rate</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Potential Savings</div>
+      <div class="stat-value accent" id="savings">—</div>
+      <div class="stat-sub">per month with fixes</div>
+    </div>
+  </div>
+
+  <!-- Dashboard -->
+  <div class="dashboard">
+    <!-- Hidden Costs -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">🚨 Hidden Cost Breakdown</div>
+      </div>
+      <div class="panel-body">
+        <div class="cost-bar-group" id="cost-bars">
+          <div class="loading"><div class="spinner"></div>Analyzing costs...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Agents -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">🤖 Active Agents</div>
+      </div>
+      <div class="panel-body" style="padding:0">
+        <table class="agent-table" id="agent-table">
+          <thead>
+            <tr>
+              <th>Agent</th>
+              <th>Model</th>
+              <th>Tokens</th>
+              <th>Sessions</th>
+              <th>Cost</th>
+            </tr>
+          </thead>
+          <tbody id="agent-tbody">
+            <tr><td colspan="5"><div class="loading"><div class="spinner"></div>Loading agents...</div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Recommendations -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">💡 Optimization Recommendations</div>
+      </div>
+      <div class="panel-body" id="recommendations">
+        <div class="loading"><div class="spinner"></div>Generating recommendations...</div>
+      </div>
+    </div>
+
+    <!-- Timeline -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">📈 Cost Timeline</div>
+      </div>
+      <div class="panel-body" id="timeline">
+        <div class="loading"><div class="spinner"></div>Loading timeline...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chat Panel -->
+  <div class="chat-panel">
+    <div class="chat-header">
+      <div class="dot"></div>
+      Ask the Auditor
+    </div>
+    <div class="quick-actions">
+      <button class="quick-btn" onclick="sendMessage('Show me my hidden costs')">Hidden costs</button>
+      <button class="quick-btn" onclick="sendMessage('How much would it cost to research competitors?')">Estimate task</button>
+      <button class="quick-btn" onclick="sendMessage('Which agent wastes the most?')">Worst agent</button>
+      <button class="quick-btn" onclick="sendMessage('How can I save money?')">Save money</button>
+    </div>
+    <div class="chat-messages" id="chat-messages">
+      <div class="msg system">Agent Cost Auditor connected. Ask me anything about your AI spending.</div>
+    </div>
+    <div class="chat-input-area">
+      <input type="text" class="chat-input" id="chat-input" placeholder="Ask about your agent costs..." onkeydown="if(event.key==='Enter')sendMessage()">
+      <button class="chat-send" id="chat-send" onclick="sendMessage()">Send</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API_BASE = window.location.origin;
+
+// --- Data Loading ---
+async function loadDashboard() {
+  try {
+    const [overviewRes, hiddenRes, timelineRes] = await Promise.all([
+      fetch(`${API_BASE}/api/overview`).then(r => r.json()).catch(() => null),
+      fetch(`${API_BASE}/api/hidden-costs`).then(r => r.json()).catch(() => null),
+      fetch(`${API_BASE}/api/timeline`).then(r => r.json()).catch(() => null),
+    ]);
+
+    if (overviewRes) renderOverview(overviewRes);
+    if (hiddenRes) renderHiddenCosts(hiddenRes);
+    if (timelineRes) renderTimeline(timelineRes);
+  } catch (e) {
+    console.error('Dashboard load error:', e);
+    // Load demo data if API is not available
+    loadDemoData();
+  }
+}
+
+function loadDemoData() {
+  // Demo data for when API isn't running
+  const overview = {
+    agents: [
+      { agent: "main (WhatsApp)", model: "claude-sonnet-4-5", total_tokens: 892400, sessions: 12, estimated_cost_usd: 18.47, last_active: "2026-02-10T04:11:00Z", status: "hibernating" },
+    ],
+    total_estimated_cost_usd: 18.47
+  };
+
+  const hidden = {
+    cost_breakdown: {
+      heartbeats: { count: 18, tokens: 77310, cost_usd: 0.2484, description: "Health checks every 60s (WhatsApp + himalaya + cron)" },
+      memory_resyncs: { count: 2, tokens: 50400, cost_usd: 0.1784, description: "SOUL.md + conversation history reloads" },
+      whatsapp_reconnects: { count: 2, tokens: 9600, cost_usd: 0.0303, description: "WhatsApp gateway disconnect/reconnect (status 428)" },
+      email_checks: { count: 2, tokens: 16350, cost_usd: 0.0568, description: "Himalaya IMAP inbox scans" },
+      compactions: { count: 1, tokens: 56800, cost_usd: 0.228, description: "Context window compaction" },
+      cost_reports: { count: 2, tokens: 12390, cost_usd: 0.0659, description: "Auto cost report generation" },
+      user_requests: { count: 1, tokens: 5920, cost_usd: 0.0198, description: "Your actual requests" },
+      responses: { count: 1, tokens: 11000, cost_usd: 0.065, description: "Bot responses to you" },
+    },
+    summary: {
+      total_cost_today: 0.8926,
+      user_initiated_cost: 0.0848,
+      hidden_cost: 0.8078,
+      waste_percentage: 90.5,
+      projected_monthly_total: 26.78,
+      projected_monthly_hidden: 24.23
+    },
+    recommendations: [
+      { issue: "Heartbeat overhead — 60s interval burning tokens 24/7", monthly_waste: 7.45, fix: "Increase heartbeat interval from 60s to 300s during idle periods. Use lightweight HTTP ping instead of LLM-powered health checks.", savings_pct: 80 },
+      { issue: "Full memory resyncs loading entire SOUL.md + history", monthly_waste: 5.35, fix: "Cache SOUL.md locally. Use incremental history loading. Resync only after reconnects, not on schedule.", savings_pct: 60 },
+      { issue: "Himalaya email scans using LLM to check inbox", monthly_waste: 1.70, fix: "Use himalaya CLI directly to count emails. Only invoke LLM when there ARE emails to process.", savings_pct: 75 },
+      { issue: "Context compaction using expensive Sonnet model", monthly_waste: 6.84, fix: "Use Haiku ($0.80/M) instead of Sonnet ($3/M) for compaction. Switch to sliding window.", savings_pct: 70 },
+      { issue: "WhatsApp reconnect cycles invoking LLM", monthly_waste: 0.91, fix: "Handle reconnects at transport layer. No LLM needed for connection state.", savings_pct: 95 },
+      { issue: "Auto cost reports using LLM for arithmetic", monthly_waste: 1.98, fix: "Use bash script for cost computation. Zero token cost.", savings_pct: 100 },
+    ],
+    total_potential_monthly_savings: 18.42
+  };
+
+  const timeline = {
+    timeline: [
+      { timestamp: 1739059260000, category: "heartbeat", cost_usd: 0.0156, tokens: 4580, cumulative_cost_usd: 0.0156 },
+      { timestamp: 1739059320000, category: "heartbeat", cost_usd: 0.0162, tokens: 4620, cumulative_cost_usd: 0.0318 },
+      { timestamp: 1739059380000, category: "heartbeat", cost_usd: 0.0138, tokens: 4245, cumulative_cost_usd: 0.0456 },
+      { timestamp: 1739059440000, category: "heartbeat", cost_usd: 0.0148, tokens: 4480, cumulative_cost_usd: 0.0604 },
+      { timestamp: 1739059500000, category: "heartbeat", cost_usd: 0.0138, tokens: 4245, cumulative_cost_usd: 0.0742 },
+      { timestamp: 1739059560000, category: "heartbeat", cost_usd: 0.0141, tokens: 4285, cumulative_cost_usd: 0.0883 },
+      { timestamp: 1739059680000, category: "heartbeat", cost_usd: 0.0153, tokens: 4550, cumulative_cost_usd: 0.1036 },
+      { timestamp: 1739059800000, category: "memory_resync", cost_usd: 0.0892, tokens: 25200, cumulative_cost_usd: 0.1928 },
+      { timestamp: 1739059980000, category: "whatsapp_reconnect", cost_usd: 0.0150, tokens: 4920, cumulative_cost_usd: 0.2078 },
+      { timestamp: 1739060000000, category: "whatsapp_reconnect", cost_usd: 0.0153, tokens: 4980, cumulative_cost_usd: 0.2231 },
+      { timestamp: 1739060160000, category: "email_check", cost_usd: 0.0345, tokens: 9700, cumulative_cost_usd: 0.2576 },
+      { timestamp: 1739060165000, category: "email_check", cost_usd: 0.0223, tokens: 6650, cumulative_cost_usd: 0.2799 },
+      { timestamp: 1739060340000, category: "memory_resync", cost_usd: 0.0892, tokens: 25200, cumulative_cost_usd: 0.3691 },
+      { timestamp: 1739060460000, category: "compaction", cost_usd: 0.228, tokens: 56800, cumulative_cost_usd: 0.5971 },
+      { timestamp: 1739060520000, category: "cost_report", cost_usd: 0.043, tokens: 8300, cumulative_cost_usd: 0.6401 },
+      { timestamp: 1739060525000, category: "cost_report", cost_usd: 0.0229, tokens: 4090, cumulative_cost_usd: 0.6630 },
+      { timestamp: 1739160660000, category: "user_request", cost_usd: 0.0198, tokens: 5920, cumulative_cost_usd: 0.6828 },
+      { timestamp: 1739160720000, category: "response", cost_usd: 0.065, tokens: 11000, cumulative_cost_usd: 0.7478 },
+    ]
+  };
+
+  renderOverview(overview);
+  renderHiddenCosts(hidden);
+  renderTimeline(timeline);
+}
+
+// --- Renderers ---
+function renderOverview(data) {
+  document.getElementById('total-cost').textContent = `$${data.total_estimated_cost_usd.toFixed(2)}`;
+  
+  const tbody = document.getElementById('agent-tbody');
+  tbody.innerHTML = data.agents.map(a => `
+    <tr>
+      <td style="font-weight:600">${a.agent}</td>
+      <td><span class="model-badge">${a.model.split('-').slice(0,2).join('-')}</span></td>
+      <td class="mono">${(a.total_tokens / 1000).toFixed(0)}K</td>
+      <td class="mono">${a.sessions}</td>
+      <td class="mono" style="color:var(--warning)">$${a.estimated_cost_usd.toFixed(2)}</td>
+    </tr>
+  `).join('');
+}
+
+function renderHiddenCosts(data) {
+  const s = data.summary;
+  document.getElementById('hidden-cost').textContent = `$${s.hidden_cost.toFixed(2)}`;
+  document.getElementById('waste-pct').textContent = `${s.waste_percentage}% of total`;
+  document.getElementById('monthly-cost').textContent = `$${s.projected_monthly_total.toFixed(0)}`;
+  document.getElementById('savings').textContent = `$${data.total_potential_monthly_savings.toFixed(0)}`;
+
+  // Cost bars
+  const breakdown = data.cost_breakdown;
+  const maxCost = Math.max(...Object.values(breakdown).map(v => v.cost_usd));
+  
+  const barOrder = ['heartbeats', 'memory_resyncs', 'compactions', 'tool_retries', 'system_prompts', 'user_requests', 'responses'];
+  const labels = {
+    heartbeats: '💓 Heartbeats',
+    memory_resyncs: '🧠 Memory Resyncs',
+    compactions: '📦 Compactions',
+    tool_retries: '🔄 Tool Retries',
+    system_prompts: '📝 System Prompts',
+    user_requests: '👤 User Requests',
+    responses: '🤖 Responses'
+  };
+
+  document.getElementById('cost-bars').innerHTML = barOrder
+    .filter(k => breakdown[k] && breakdown[k].cost_usd > 0)
+    .map(k => {
+      const v = breakdown[k];
+      const pct = (v.cost_usd / maxCost) * 100;
+      const cls = ['user_requests', 'responses'].includes(k) ? 'useful' : 
+                  ['heartbeats', 'tool_retries'].includes(k) ? 'waste' : 'warning';
+      return `
+        <div class="cost-bar-item">
+          <div class="cost-bar-label">${labels[k]}</div>
+          <div class="cost-bar-track">
+            <div class="cost-bar-fill ${cls}" style="width:${pct}%"></div>
+          </div>
+          <div class="cost-bar-value" style="color:var(--${cls === 'waste' ? 'danger' : cls === 'useful' ? 'accent' : 'warning'})">
+            $${v.cost_usd.toFixed(3)}
+          </div>
+        </div>
+      `;
+    }).join('');
+
+  // Recommendations
+  document.getElementById('recommendations').innerHTML = data.recommendations.map(r => `
+    <div class="rec-card">
+      <div class="rec-issue">⚠️ ${r.issue}</div>
+      <div class="rec-fix">${r.fix}</div>
+      <div class="rec-savings">💰 Wasting $${r.monthly_waste.toFixed(2)}/mo — can save ${r.savings_pct}%</div>
+    </div>
+  `).join('');
+}
+
+function renderTimeline(data) {
+  const catLabels = {
+    heartbeat: 'Heartbeat', memory_resync: 'Memory Resync', user_request: 'User Request',
+    response: 'Response', compaction: 'Compaction', tool_retry: 'Tool Retry', system_prompt: 'Sys Prompt'
+  };
+
+  document.getElementById('timeline').innerHTML = data.timeline.map(t => {
+    const time = new Date(t.timestamp).toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+    return `
+      <div class="timeline-row">
+        <div class="timeline-time">${time}</div>
+        <div>
+          <span class="timeline-dot ${t.category}"></span>
+          ${catLabels[t.category] || t.category}
+          <span style="color:var(--text-dim);font-size:11px;margin-left:6px">${(t.tokens/1000).toFixed(1)}K tok</span>
+        </div>
+        <div class="timeline-cost">$${t.cumulative_cost_usd.toFixed(3)}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+// --- Chat ---
+async function sendMessage(text) {
+  const input = document.getElementById('chat-input');
+  const message = text || input.value.trim();
+  if (!message) return;
+  
+  input.value = '';
+  addMessage('user', message);
+  
+  const sendBtn = document.getElementById('chat-send');
+  sendBtn.disabled = true;
+  
+  addMessage('system', '⏳ Thinking...');
+  
+  try {
+    const res = await fetch(`${API_BASE}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message })
+    });
+    
+    const data = await res.json();
+    
+    // Remove "thinking" message
+    const msgs = document.getElementById('chat-messages');
+    const lastMsg = msgs.lastElementChild;
+    if (lastMsg && lastMsg.classList.contains('system')) {
+      lastMsg.remove();
+    }
+    
+    addMessage('assistant', data.response || data.error || 'No response');
+    
+  } catch (e) {
+    const msgs = document.getElementById('chat-messages');
+    const lastMsg = msgs.lastElementChild;
+    if (lastMsg && lastMsg.classList.contains('system')) {
+      lastMsg.remove();
+    }
+    addMessage('assistant', `⚠️ API not available. Start the backend with:\n\n\`cd backend && python server.py\`\n\nThe dashboard works with demo data in the meantime.`);
+  }
+  
+  sendBtn.disabled = false;
+}
+
+function addMessage(role, text) {
+  const msgs = document.getElementById('chat-messages');
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+  
+  // Simple markdown-like formatting
+  let html = text
+    .replace(/`([^`]+)`/g, '<code style="background:var(--bg);padding:2px 6px;border-radius:3px;font-family:JetBrains Mono,monospace;font-size:12px">$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\n/g, '<br>');
+  
+  div.innerHTML = html;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+// --- Init ---
+loadDashboard();
+</script>
+</body>
+</html>

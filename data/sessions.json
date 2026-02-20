@@ -1,0 +1,22 @@
+{
+  "agent:main:main": {
+    "sessionId": "57be34c0-4e4d-4eb4-8c22-e78e238e9f95",
+    "channel": "whatsapp",
+    "channelId": "+5213333689307",
+    "chatType": "direct",
+    "model": "claude-sonnet-4-5",
+    "provider": "anthropic",
+    "totalTokens": 892400,
+    "totalInputTokens": 724300,
+    "totalOutputTokens": 168100,
+    "totalCacheRead": 3450000,
+    "totalCost": 18.47,
+    "totalApiCalls": 342,
+    "sessionCount": 12,
+    "lastActive": "2026-02-10T04:11:00Z",
+    "status": "hibernating",
+    "skills": ["bluebubbles", "clawdhub", "github", "himalaya"],
+    "dailyAvgCost": 2.85,
+    "activeDays": 14
+  }
+}
